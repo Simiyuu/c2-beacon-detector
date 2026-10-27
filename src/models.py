@@ -71,12 +71,15 @@ class FlowRecord(BaseModel):
     total_bytes: int = 0
     timestamps: List[float] = Field(default_factory=list)
     packet_lengths: List[int] = Field(default_factory=list)
+    payload_entropies: List[float] = Field(default_factory=list)
 
     def add_packet(self, packet: PacketEvent) -> None:
         self.packet_count += 1
         self.total_bytes += packet.length
         self.timestamps.append(packet.timestamp)
         self.packet_lengths.append(packet.length)
+        self.payload_entropies.append(packet.payload_entropy)
+        
 
 
 class BeaconAlert(BaseModel):
@@ -93,4 +96,3 @@ class BeaconAlert(BaseModel):
     jitter_metrics: JitterMetrics
     anomaly_score: float
     description: str
-    
