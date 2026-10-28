@@ -84,14 +84,14 @@ class RuleEngine:
                 if incoming_weight > existing_weight:
                     merged_desc = (
                         f"{alert.description} | Correlated technique: "
-                        f"{existing.mitre_attack.technique_id} ({existing.mitre_attack.technique_name})"
+                        f"{existing.mitre_attack.technique_id.value} ({existing.mitre_attack.technique_name})"
                     )
                     updated = alert.model_copy(update={"description": merged_desc})
                     deduped[fid] = updated
                 else:
                     merged_desc = (
                         f"{existing.description} | Correlated technique: "
-                        f"{alert.mitre_attack.technique_id} ({alert.mitre_attack.technique_name})"
+                        f"{alert.mitre_attack.technique_id.value} ({alert.mitre_attack.technique_name})"
                     )
                     updated = existing.model_copy(update={"description": merged_desc})
                     deduped[fid] = updated
