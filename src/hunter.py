@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from src.engine import RuleEngine
 from src.models import BeaconAlert, FlowRecord
-from src.reader import PCAPReader
+from src.reader import StreamingPacketReader
 from src.sessionizer import FlowSessionizer
 
 
@@ -37,14 +37,9 @@ class C2Hunter:
         completed_flows: List[FlowRecord] = []
         packet_count = 0
 
-        reader = PCAPReader(pcap_path)
-        packet_stream = (
-            reader.read_packets()
-            if hasattr(reader, "read_packets")
-            else reader
-        )
+        reader = StreamingPacketReader(pcap_path)
 
-        for packet in packet_stream:
+        for packet in reader:
             packet_count += 1
             evicted = self.sessionizer.process_packet(packet)
             if evicted is not None:
@@ -71,5 +66,4 @@ class C2Hunter:
     def get_summary(self) -> Dict[str, Any]:
         """Returns diagnostic metrics from the most recent hunt."""
         return self.last_hunt_stats.copy()
-    
     
