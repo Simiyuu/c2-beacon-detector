@@ -9,7 +9,6 @@ from src.sessionizer import FlowSessionizer
 
 class C2Hunter:
     """Enterprise streaming threat hunter orchestrating packet ingestion,
-
     stateful session tracking, and multi-rule C2 beacon detection.
     """
 
@@ -46,7 +45,7 @@ class C2Hunter:
                 completed_flows.append(evicted)
 
         # Drain remaining active sessions upon reaching EOF
-        flushed_flows = self.sessionizer.flush_all()
+        flushed_flows = self.sessionizer.flush()
         completed_flows.extend(flushed_flows)
 
         # Run multi-rule evaluation and deduplication
