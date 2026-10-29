@@ -1,10 +1,13 @@
 venv/
 .venv/
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.pcap
+*.pcapng
 .pytest_cache/
+.coverage
+htmlcov/
 .git/
 .github/
 .vscode/
-tests/
+tests/data/*.pcap

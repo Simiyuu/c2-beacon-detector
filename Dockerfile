@@ -1,23 +1,25 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-# Prevent Python from buffering stdout/stderr and avoid writing .pyc files
+# Prevent Python from writing bytecode and enable unbuffered terminal logging
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache and install Python dependencies from wheels
+# Install dependencies using layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application source and sample data
+# Copy engine modules, benchmark harness, and documentation
 COPY src/ ./src/
-COPY sample_data/ ./sample_data/
+COPY evaluate.py ./evaluate.py
+COPY README.md ./README.md
 
-# Run as non-privileged service user
+# Non-root unprivileged service user
 RUN useradd -u 10001 -m appuser && \
     chown -R appuser:appuser /app
+
 USER appuser
 
 ENTRYPOINT ["python", "-m", "src.cli"]
