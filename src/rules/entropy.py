@@ -44,14 +44,18 @@ class HighEntropyChannelRule(BaseRule):
         self.entropy_threshold = entropy_threshold
 
     def evaluate(self, flow: FlowRecord) -> Optional[BeaconAlert]:
-        """Evaluates mean payload Shannon entropy across the flow."""
-        if not self.enabled or flow.packet_count < self.min_packets:
+        """Evaluates mean payload Shannon entropy across the active sliding window."""
+        if not self.enabled:
+            return None
+
+        active_count = len(flow.payload_entropies)
+        if active_count < self.min_packets and flow.packet_count < self.min_packets:
             return None
 
         if not flow.payload_entropies:
             return None
 
-        # Filter out empty or header-only ACK packets (entropy == 0.0)
+        # Filter out empty or header-only ACK packets (entropy == 0.0) from the window
         active_entropies = [e for e in flow.payload_entropies if e > 0.0]
         if len(active_entropies) < max(3, self.min_packets // 2):
             return None
@@ -59,7 +63,11 @@ class HighEntropyChannelRule(BaseRule):
         mean_entropy = float(np.mean(active_entropies))
 
         if mean_entropy >= self.entropy_threshold:
-            deltas = calculate_iat(flow.timestamps)
+            deltas = (
+                flow.inter_arrival_times
+                if hasattr(flow, "inter_arrival_times") and flow.inter_arrival_times
+                else calculate_iat(flow.timestamps)
+            )
             iat_mean = float(np.mean(deltas)) if len(deltas) > 0 else 0.0
             iat_std = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else 0.0
             cv = calculate_coefficient_of_variation(deltas) if len(deltas) > 1 else 0.0
@@ -77,8 +85,8 @@ class HighEntropyChannelRule(BaseRule):
 
             description = (
                 f"High-entropy C2 channel detected on {flow.flow_id}: "
-                f"{len(active_entropies)} data packets evaluated with mean Shannon entropy "
-                f"H={mean_entropy:.4f} bits (threshold >= {self.entropy_threshold})."
+                f"{len(active_entropies)} window data packets (lifetime {flow.packet_count}) evaluated with "
+                f"mean Shannon entropy H={mean_entropy:.4f} bits (threshold >= {self.entropy_threshold})."
             )
 
             return self.create_alert(
@@ -89,4 +97,8 @@ class HighEntropyChannelRule(BaseRule):
             )
 
         return None
-        
+
+
+# Backward-compatibility alias
+HighEntropyRule = HighEntropyChannelRule
+
