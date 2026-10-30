@@ -45,11 +45,17 @@ class PeriodicBeaconRule(BaseRule):
         self.cv_threshold = cv_threshold
 
     def evaluate(self, flow: FlowRecord) -> Optional[BeaconAlert]:
-        """Evaluates flow inter-arrival times against periodic beaconing thresholds."""
-        if not self.enabled or flow.packet_count < self.min_packets:
+        """Evaluates flow inter-arrival times against periodic beaconing thresholds across the active window."""
+        if not self.enabled:
             return None
 
-        deltas = calculate_iat(flow.timestamps)
+        # Ensure either cumulative or active window packet count meets minimum threshold
+        active_packet_count = len(flow.timestamps)
+        if active_packet_count < self.min_packets and flow.packet_count < self.min_packets:
+            return None
+
+        # Prefer pre-computed windowed IAT if available, fallback to calculate_iat
+        deltas = flow.inter_arrival_times if hasattr(flow, "inter_arrival_times") and flow.inter_arrival_times else calculate_iat(flow.timestamps)
         if len(deltas) < 3:
             return None
 
@@ -57,7 +63,7 @@ class PeriodicBeaconRule(BaseRule):
 
         if cv <= self.cv_threshold:
             iat_mean = float(np.mean(deltas))
-            iat_std = float(np.std(deltas, ddof=1))
+            iat_std = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else 0.0
             mad = calculate_median_absolute_deviation(deltas)
             regularity = calculate_regularity_score(deltas)
 
@@ -72,9 +78,10 @@ class PeriodicBeaconRule(BaseRule):
                 shannon_entropy=0.0,
             )
 
+            sample_count = len(deltas) + 1
             description = (
                 f"Periodic C2 beaconing identified on {flow.flow_id}: "
-                f"{flow.packet_count} packets with mean IAT={iat_mean:.2f}s, "
+                f"{sample_count} window packets (lifetime {flow.packet_count}) with mean IAT={iat_mean:.2f}s, "
                 f"Cv={cv:.4f} (<= {self.cv_threshold}), regularity={regularity:.2f}."
             )
 
@@ -86,5 +93,4 @@ class PeriodicBeaconRule(BaseRule):
             )
 
         return None
-
     
