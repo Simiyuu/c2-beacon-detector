@@ -81,11 +81,13 @@ class WindowedFlowSessionizer:
         """Returns operational metrics for telemetry and health checking."""
         return {
             "active_flows": len(self._flows),
+            "active_flows_count": len(self._flows),
             "total_packets_processed": self._total_packets_processed,
             "idle_timeout": self.idle_timeout,
             "window_duration": self.window_duration,
             "max_window_packets": self.max_window_packets,
         }
+    
     
 
     
