@@ -49,11 +49,19 @@ class JitterBeaconRule(BaseRule):
         self.mad_ratio_max = mad_ratio_max
 
     def evaluate(self, flow: FlowRecord) -> Optional[BeaconAlert]:
-        """Evaluates flow inter-arrival times against sleep-jitter dispersion models."""
-        if not self.enabled or flow.packet_count < self.min_packets:
+        """Evaluates flow inter-arrival times against sleep-jitter dispersion models across the active window."""
+        if not self.enabled:
             return None
 
-        deltas = calculate_iat(flow.timestamps)
+        active_packet_count = len(flow.timestamps)
+        if active_packet_count < self.min_packets and flow.packet_count < self.min_packets:
+            return None
+
+        deltas = (
+            flow.inter_arrival_times
+            if hasattr(flow, "inter_arrival_times") and flow.inter_arrival_times
+            else calculate_iat(flow.timestamps)
+        )
         if len(deltas) < 5:
             return None
 
@@ -68,13 +76,13 @@ class JitterBeaconRule(BaseRule):
         # Must fall within the jittered beacon band and maintain strong median clustering
         if (self.cv_min <= cv <= self.cv_max) and (mad_ratio <= self.mad_ratio_max):
             iat_mean = float(np.mean(deltas))
-            iat_std = float(np.std(deltas, ddof=1))
+            iat_std = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else 0.0
             jitter_pct = estimate_jitter_percentage(deltas)
 
             # Escalate severity for long-lived persistent channels
             severity = (
                 AlertSeverity.HIGH
-                if flow.packet_count >= 15
+                if flow.packet_count >= 15 or active_packet_count >= 15
                 else self.severity
             )
 
@@ -88,9 +96,10 @@ class JitterBeaconRule(BaseRule):
                 shannon_entropy=0.0,
             )
 
+            sample_count = len(deltas) + 1
             description = (
                 f"Jitter-tolerant C2 beaconing detected on {flow.flow_id}: "
-                f"{flow.packet_count} packets, median IAT={median_iat:.2f}s, "
+                f"{sample_count} window packets (lifetime {flow.packet_count}), median IAT={median_iat:.2f}s, "
                 f"estimated jitter={jitter_pct:.1f}%, Cv={cv:.4f}, MAD ratio={mad_ratio:.4f}."
             )
 
