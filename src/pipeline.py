@@ -1,10 +1,16 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 import numpy as np
 
 from src.detector import BeaconDetector
 from src.features import FeatureExtractor
-from src.models import FlowRecord
+from src.ids_generator import IDSRuleGenerator
+from src.models import BeaconAlert, FlowRecord, PacketEvent
 from src.parser import PCAPParser
+from src.rules.base import BaseRule
+from src.rules.entropy import HighEntropyChannelRule
+from src.rules.jitter import JitterBeaconRule
+from src.rules.periodic import PeriodicBeaconRule
+from src.windowed_sessionizer import WindowedFlowSessionizer
 
 
 def _extract_metric(features: Any, key: str, default: float = 0.0) -> float:
@@ -97,3 +103,125 @@ class DetectionPipeline:
                 })
 
         return alerts
+
+
+class StreamingBeaconDetector:
+    """End-to-end streaming detection pipeline orchestrating sessionization, rule analysis, and IDS export."""
+
+    def __init__(
+        self,
+        rules: Optional[List[BaseRule]] = None,
+        sessionizer: Optional[WindowedFlowSessionizer] = None,
+        ids_generator: Optional[IDSRuleGenerator] = None,
+        alert_callback: Optional[Callable[[BeaconAlert], None]] = None,
+    ) -> None:
+        self.rules: List[BaseRule] = (
+            rules
+            if rules is not None
+            else [
+                PeriodicBeaconRule(),
+                JitterBeaconRule(),
+                HighEntropyChannelRule(),
+            ]
+        )
+        self.sessionizer: WindowedFlowSessionizer = (
+            sessionizer if sessionizer is not None else WindowedFlowSessionizer()
+        )
+        self.ids_generator: IDSRuleGenerator = (
+            ids_generator if ids_generator is not None else IDSRuleGenerator()
+        )
+        self.alert_callback = alert_callback
+
+        self._alerts: List[BeaconAlert] = []
+        self._alerted_signatures: Set[str] = set()
+        self._total_packets_processed = 0
+
+    @property
+    def alerts(self) -> List[BeaconAlert]:
+        """Returns all unique alerts detected over the pipeline lifecycle."""
+        return self._alerts
+
+    def _generate_alert_signature(self, alert: BeaconAlert) -> str:
+        """Constructs a deduplication signature for a flow alert."""
+        tech_id = (
+            alert.mitre_attack.technique_id.value
+            if hasattr(alert.mitre_attack.technique_id, "value")
+            else str(alert.mitre_attack.technique_id)
+        )
+        return f"{alert.flow_id}::{tech_id}"
+
+    def process_packet(self, packet: PacketEvent) -> List[BeaconAlert]:
+        """Ingests a single packet, updates sliding flow window, and runs active detection rules."""
+        self._total_packets_processed += 1
+        flow: FlowRecord = self.sessionizer.add_packet(packet)
+        emitted_alerts: List[BeaconAlert] = []
+
+        for rule in self.rules:
+            if not rule.enabled:
+                continue
+
+            alert = rule.evaluate(flow)
+            if alert is not None:
+                sig = self._generate_alert_signature(alert)
+                if sig not in self._alerted_signatures:
+                    self._alerted_signatures.add(sig)
+                    self._alerts.append(alert)
+                    emitted_alerts.append(alert)
+
+                    if self.alert_callback:
+                        self.alert_callback(alert)
+
+        return emitted_alerts
+
+    def process_packet_events(self, packets: List[PacketEvent]) -> List[BeaconAlert]:
+        """Processes a sequence of packet events in stream order, returning all newly triggered alerts."""
+        new_alerts: List[BeaconAlert] = []
+        for packet in packets:
+            new_alerts.extend(self.process_packet(packet))
+        return new_alerts
+
+    def tick(self, current_time: float) -> List[BeaconAlert]:
+        """Evicts dormant flows based on idle timeout and performs a final rule evaluation on evicted flows."""
+        evicted_flows = self.sessionizer.evict_idle_flows(current_time=current_time)
+        closing_alerts: List[BeaconAlert] = []
+
+        for flow in evicted_flows:
+            for rule in self.rules:
+                if not rule.enabled:
+                    continue
+                alert = rule.evaluate(flow)
+                if alert is not None:
+                    sig = self._generate_alert_signature(alert)
+                    if sig not in self._alerted_signatures:
+                        self._alerted_signatures.add(sig)
+                        self._alerts.append(alert)
+                        closing_alerts.append(alert)
+
+                        if self.alert_callback:
+                            self.alert_callback(alert)
+
+        return closing_alerts
+
+    def export_ids_rules(self, engine: str = "suricata") -> str:
+        """Exports Suricata or Snort rules for all detected alerts."""
+        return self.ids_generator.export_rules_text(alerts=self._alerts, engine=engine)
+
+    def stats(self) -> dict:
+        """Returns operational metrics across sessionization, rules, and alert generation."""
+        session_stats = self.sessionizer.stats()
+        return {
+            "total_packets_processed": self._total_packets_processed,
+            "total_alerts_emitted": len(self._alerts),
+            "unique_alerted_flows": len(self._alerted_signatures),
+            "active_rules_count": len([r for r in self.rules if r.enabled]),
+            "sessionizer": session_stats,
+        }
+
+    def reset(self) -> None:
+        """Resets the pipeline state, clearing alerts, sessions, and deduplication tables."""
+        self._alerts.clear()
+        self._alerted_signatures.clear()
+        self._total_packets_processed = 0
+        self.sessionizer.flush()
+        self.ids_generator.reset()
+        
