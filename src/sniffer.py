@@ -83,4 +83,5 @@ class LivePacketSniffer:
             "running": self._is_running.is_set(),
         }
 
-    
+# Alias for backwards and forwards compatibility
+AsyncPacketSniffer = LivePacketSniffer
