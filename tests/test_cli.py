@@ -1,9 +1,13 @@
 import json
 from pathlib import Path
+import queue
+import time
+from unittest.mock import MagicMock, patch
 import pytest
 from scapy.all import IP, Raw, TCP, wrpcap
 
 from src.cli import build_parser, main
+from src.sniffer import PacketSnifferError
 
 
 @pytest.fixture
@@ -48,14 +52,39 @@ def benign_pcap_path(tmp_path: Path) -> str:
 
 
 def test_cli_parser_defaults():
-    """Verifies default argument parsing structure."""
+    """Verifies default argument parsing structure and v2 sliding window parameters."""
     parser = build_parser()
     args = parser.parse_args(["--pcap", "sample.pcap"])
     assert args.pcap == "sample.pcap"
+    assert args.interface is None
+    assert args.bpf == "ip and (tcp or udp)"
+    assert args.packet_count is None
+    assert args.timeout is None
+    assert args.window_duration == 300.0
+    assert args.max_window_packets == 100
+    assert args.idle_timeout == 120.0
     assert args.output is None
     assert args.format is None
+    assert args.export_ids is None
+    assert args.ids_engine == "suricata"
     assert args.no_dedup is False
     assert args.strict is False
+
+
+def test_cli_neither_pcap_nor_interface_returns_error(capsys):
+    """Verifies that omitting both --pcap and --interface yields exit code 2."""
+    ret = main([])
+    assert ret == 2
+    captured = capsys.readouterr()
+    assert "Either --pcap (-p) or --interface (-i) must be specified." in captured.err
+
+
+def test_cli_both_pcap_and_interface_returns_error(capsys):
+    """Verifies that passing both --pcap and --interface simultaneously yields exit code 2."""
+    ret = main(["--pcap", "sample.pcap", "--interface", "eth0"])
+    assert ret == 2
+    captured = capsys.readouterr()
+    assert "Cannot specify both --pcap and --interface simultaneously." in captured.err
 
 
 def test_cli_missing_pcap_returns_error_code(capsys):
@@ -114,4 +143,78 @@ def test_cli_exports_csv_format(c2_pcap_path, tmp_path):
     content = output_csv.read_text(encoding="utf-8")
     assert "alert_id,timestamp,flow_id" in content
     assert "8443" in content
+
+
+def test_cli_pcap_export_ids_rules_suricata_and_snort(c2_pcap_path, tmp_path):
+    """Verifies automated Suricata and Snort rule export from PCAP hunting."""
+    suricata_file = tmp_path / "suricata.rules"
+    ret_suricata = main([
+        "--pcap", c2_pcap_path,
+        "--export-ids", str(suricata_file),
+        "--ids-engine", "suricata",
+    ])
+    assert ret_suricata == 0
+    assert suricata_file.exists()
+    suricata_content = suricata_file.read_text(encoding="utf-8")
+    assert "alert tcp $HOME_NET any -> 198.51.100.99 8443" in suricata_content
+    assert "classtype:trojan-activity;" in suricata_content
+
+    snort_file = tmp_path / "snort.rules"
+    ret_snort = main([
+        "--pcap", c2_pcap_path,
+        "--export-ids", str(snort_file),
+        "--ids-engine", "snort",
+    ])
+    assert ret_snort == 0
+    assert snort_file.exists()
+    snort_content = snort_file.read_text(encoding="utf-8")
+    assert "alert tcp $HOME_NET any -> 198.51.100.99 8443" in snort_content
+    assert "detection_filter:track by_src" in snort_content
+
+
+@patch("src.cli.LivePacketSniffer")
+def test_cli_live_sniff_sniffer_error_returns_exit_code_2(mock_sniffer_cls, capsys):
+    """Verifies that sniffer initialization errors return exit code 2."""
+    mock_sniffer_cls.side_effect = PacketSnifferError("Permission denied on raw socket")
+    ret = main(["--interface", "eth0"])
+    assert ret == 2
+    captured = capsys.readouterr()
+    assert "Error initializing packet sniffer" in captured.err
+
+
+@patch("src.cli.LivePacketSniffer")
+def test_cli_live_sniff_processes_packets_and_exports_ids(mock_sniffer_cls, tmp_path):
+    """Verifies live interface capture pipeline, packet limit termination, and IDS export."""
+    mock_instance = MagicMock()
+    q = queue.Queue()
+    base_time = time.time()
+
+    # Ingest 6 periodic packets (10.0s intervals) to trigger PeriodicBeaconRule
+    for i in range(6):
+        pkt = (
+            IP(src="10.0.0.45", dst="198.51.100.99")
+            / TCP(sport=51234, dport=8443)
+            / Raw(load=b"BEACON")
+        )
+        pkt.time = base_time + (i * 10.0)
+        q.put(pkt)
+
+    mock_instance._queue = q
+    mock_instance.stats = {"running": True}
+    mock_sniffer_cls.return_value = mock_instance
+
+    ids_out = tmp_path / "live_suricata.rules"
+    ret = main([
+        "--interface", "eth0",
+        "--packet-count", "6",
+        "--export-ids", str(ids_out),
+    ])
+
+    assert ret == 0
+    assert ids_out.exists()
+    content = ids_out.read_text(encoding="utf-8")
+    assert "198.51.100.99 8443" in content
+    mock_instance.start.assert_called_once()
+    mock_instance.stop.assert_called_once()
+
     
